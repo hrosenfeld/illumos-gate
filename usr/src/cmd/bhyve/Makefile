@@ -122,7 +122,7 @@ CSTD=		$(CSTD_GNU99)
 C99MODE=	-xc99=%all
 C99LMODE=	-Xc99=%all
 
-$(PROG) := LDLIBS += -lsocket -lnsl -ldlpi -ldladm -lmd -luuid -lvmmapi -lz
+$(PROG) := LDLIBS += -lsocket -lnsl -ldlpi -ldladm -lmd -luuid -lvmmapi -lz -ldevinfo
 $(MEVENT_TEST_PROG) := LDLIBS += -lsocket
 
 .KEEP_STATE:
