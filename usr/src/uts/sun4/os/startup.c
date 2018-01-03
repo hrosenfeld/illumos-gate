@@ -2026,7 +2026,7 @@ startup_vm(void)
 
 		(void) seg_attach(&kas, segzio_base, mmu_ptob(segziosize),
 		    &kzioseg);
-		(void) segkmem_zio_create(&kzioseg);
+		(void) segkmem_create(&kzioseg);
 
 		/* create zio area covering new segment */
 		segkmem_zio_init(segzio_base, mmu_ptob(segziosize));
