@@ -487,7 +487,6 @@ i386_SUBDIRS=		\
 	addbadsec	\
 	ahciem		\
 	bhyve		\
-	bhyveconsole	\
 	bhyvectl	\
 	biosdev		\
 	cxgbetool	\
