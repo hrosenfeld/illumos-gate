@@ -290,7 +290,7 @@ VIONA_OBJS += viona_main.o \
 	viona_tx.o \
 	viona_hook.o \
 
-PPT_OBJS += ppt.o ppt_sol_glue.o
+PPT_OBJS += ppt.o
 
 #
 #	Build up defines and paths.
