@@ -37,6 +37,8 @@ dir path=usr/kernel/drv/$(ARCH64) group=sys
 dir path=usr/sbin
 driver name=viona
 driver name=vmm
+file path=kernel/drv/$(ARCH64)/ppt
+file path=kernel/drv/ppt.conf
 file path=usr/kernel/drv/$(ARCH64)/viona
 file path=usr/kernel/drv/$(ARCH64)/vmm
 file path=usr/kernel/drv/viona.conf
