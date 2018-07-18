@@ -565,6 +565,17 @@ extern "C" {
 #define	MSR_AMD_DECODE_CONFIG			0xc0011029
 #define	AMD_DECODE_CONFIG_LFENCE_DISPATCH	0x02
 
+/*
+ * Intel VMX related MSRs
+ */
+#define	MSR_IA32_FEAT_CTRL	0x03a
+#define	IA32_FEAT_CTRL_LOCK	0x1
+#define	IA32_FEAT_CTRL_SMX_EN	0x2
+#define	IA32_FEAT_CTRL_VMX_EN	0x4
+
+#define	MSR_IA32_VMX_BASIC	0x480
+#define	IA32_VMX_BASIC_INS_OUTS	(1UL << 54)
+
 #define	MCI_CTL_VALUE		0xffffffff
 
 #define	MTRR_TYPE_UC		0
