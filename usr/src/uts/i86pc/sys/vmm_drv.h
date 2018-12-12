@@ -45,7 +45,6 @@ extern int vmm_drv_msi(vmm_lease_t *, uint64_t, uint64_t);
 extern int vmm_drv_ioport_hook(vmm_hold_t *, uint_t, vmm_drv_rmem_cb_t,
     vmm_drv_wmem_cb_t, void *, void **);
 extern void vmm_drv_ioport_unhook(vmm_hold_t *, void **);
-extern int vmm_drv_msi(vmm_hold_t *, uint64_t, uint64_t);
 #endif /* _KERNEL */
 
 #endif /* _VMM_DRV_H_ */
