@@ -38,6 +38,7 @@
 #include <mdb/mdb_proc.h>
 #include <mdb/mdb_kreg.h>
 #include <mdb/mdb_err.h>
+#include <mdb/mdb_isautil.h>
 #include <mdb/mdb_amd64util.h>
 #include <mdb/mdb.h>
 
