@@ -912,8 +912,8 @@ bhyve_setflags(mdb_tgt_t *tgt, int flags)
 static void
 bhyve_activate(mdb_tgt_t *tgt)
 {
+	mdb_tgt_status_t *tsp = &tgt->t_status;
 	bhyve_data_t *bd = tgt->t_data;
-	mdb_tgt_status_t tsp;
 	const char *format;
 	char buf[BUFSIZ];
 
@@ -922,19 +922,19 @@ bhyve_activate(mdb_tgt_t *tgt)
 	(void) mdb_tgt_register_dcmds(tgt, bhyve_dcmds, MDB_MOD_FORCE);
 	mdb_tgt_register_regvars(tgt, bhyve_kregs, &bhyve_reg_disc, 0);
 
-	vmm_stop(bd->bd_vmm);
+	(void) vmm_stop(bd->bd_vmm);
 
-	if (mdb_tgt_status(tgt, &tsp) != 0)
+	if (mdb_tgt_status(tgt, tsp) != 0)
 		return;
 
-	if (tsp.st_pc != 0) {
+	if (tsp->st_pc != 0) {
 		if (mdb_dis_ins2str(mdb.m_disasm, mdb.m_target,
-		    MDB_TGT_AS_VIRT_I, buf, sizeof (buf), tsp.st_pc) !=
-		    tsp.st_pc)
+		    MDB_TGT_AS_VIRT_I, buf, sizeof (buf), tsp->st_pc) !=
+		    tsp->st_pc)
 			format = "target stopped at:\n%-#16a%8T%s\n";
 		else
 			format = "target stopped at %a:\n";
-		mdb_warn(format, tsp.st_pc, buf);
+		mdb_warn(format, tsp->st_pc, buf);
 	}
 }
 
@@ -964,7 +964,7 @@ bhyve_deactivate(mdb_tgt_t *tgt)
 		if (mdb_module_remove_dcmd(tgt->t_module, dc->dc_name) == -1)
 			mdb_warn("failed to remove dcmd %s", dc->dc_name);
 
-	vmm_cont(bd->bd_vmm);
+	(void) vmm_cont(bd->bd_vmm);
 }
 
 /*
@@ -986,7 +986,7 @@ bhyve_destroy(mdb_tgt_t *tgt)
 {
 	bhyve_data_t *bd = tgt->t_data;
 
-	vmm_cont(bd->bd_vmm);
+	(void) vmm_cont(bd->bd_vmm);
 	vmm_unmap(bd->bd_vmm);
 	vmm_close_vm(bd->bd_vmm);
 	mdb_free(bd, sizeof (bhyve_data_t));
@@ -1250,11 +1250,17 @@ bhyve_status(mdb_tgt_t *tgt, mdb_tgt_status_t *tsp)
 static void
 bhyve_sighdl(int sig, siginfo_t *sip, ucontext_t *ucp, mdb_tgt_t *tgt)
 {
+	mdb_tgt_status_t *tsp = &tgt->t_status;
 	bhyve_data_t *bd = tgt->t_data;
 
 	switch (sig) {
 	case SIGINT:
-		vmm_stop(bd->bd_vmm);
+		/*
+		 * vmm_stop() may fail if the VM was destroyed while we were
+		 * waiting. This will be handled by mdb_tgt_status().
+		 */
+		(void) vmm_stop(bd->bd_vmm);
+		(void) mdb_tgt_status(tgt, tsp);
 		break;
 	}
 }
@@ -1290,7 +1296,10 @@ bhyve_cont(mdb_tgt_t *tgt, mdb_tgt_status_t *tsp)
 	intf = mdb_signal_gethandler(SIGINT, &intd);
 	(void) mdb_signal_sethandler(SIGINT, (mdb_signal_f *)bhyve_sighdl, tgt);
 
-	vmm_cont(bd->bd_vmm);
+	if (ret = vmm_cont(bd->bd_vmm) != 0) {
+		mdb_warn("failed to continue target execution: %d", ret);
+		return (set_errno(EMDB_TGT));
+	}
 
 	tsp->st_state = MDB_TGT_RUNNING;
 	pause();
