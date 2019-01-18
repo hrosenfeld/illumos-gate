@@ -21,6 +21,8 @@
 
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright 2019 OmniOS Community Edition (OmniOSce) Association.
+ * Copyright 2019 Joyent, Inc.
  */
 
 /*
@@ -1248,6 +1250,7 @@ dlmgmt_setzoneid(void *argp, void *retp, size_t *sz, zoneid_t zoneid,
 		avl_remove(&dlmgmt_loan_avl, linkp);
 		linkp->ll_onloan = B_FALSE;
 	}
+
 	if (newzoneid != GLOBAL_ZONEID) {
 		if (zone_add_datalink(newzoneid, linkid) != 0) {
 			err = errno;
