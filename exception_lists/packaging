@@ -822,7 +822,10 @@ usr/lib/libsff.so
 #
 lib/amd64/libvmmapi.so			i386
 usr/include/bhyve.h			i386
+usr/include/libppt.h			i386
 usr/include/vmmapi.h			i386
+usr/lib/amd64/libppt.so			i386
+usr/lib/libppt.so			i386
 usr/platform/i86pc/include/sys/vmm.h	i386
 usr/platform/i86pc/include/sys/vmm_impl.h	i386
 usr/platform/i86pc/include/sys/vmm_instruction_emul.h	i386
