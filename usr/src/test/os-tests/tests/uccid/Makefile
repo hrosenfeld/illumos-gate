@@ -20,6 +20,19 @@ TESTDIR = $(ROOTOPTPKG)/tests/uccid
 
 PROGS =		\
 	atrparse	\
+	events		\
+	events-basic	\
+	events-close	\
+	events-excl	\
+	events-multi-1	\
+	events-multi-2	\
+	events-multi-3	\
+	events-multi-4	\
+	events-multi-5	\
+	events-multi-6	\
+	events-multi-7	\
+	events-update	\
+	events-yk	\
 	excl-basic	\
 	excl-badread	\
 	excl-close	\
@@ -49,6 +62,8 @@ include $(SRC)/test/Makefile.com
 CMDS = $(PROGS:%=$(TESTDIR)/%)
 $(CMDS) := FILEMODE = 0555
 $(ROOTDATA) := FILEMODE = 0444
+
+CSTD= $(CSTD_GNU99)
 
 CPPFLAGS += -D_REENTRANT -I$(SRC)/common/ccid/
 

@@ -14,8 +14,8 @@
  */
 
 /*
- * Attempt to open a YubiKey class device and get the basic information applet
- * through an APDU.
+ * Verify that we can close a device with a port still associated and then
+ * can no longer receive any outstanding events.
  */
 
 #include <err.h>
@@ -26,35 +26,39 @@
 #include <strings.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/debug.h>
+#include <poll.h>
+#include <port.h>
 
 #include <sys/usb/clients/ccid/uccid.h>
 
-#include "yk.h"
+#include "events.h"
+#include "uccid.h"
 
 int
 main(int argc, char *argv[])
 {
-	int fd;
-	uccid_cmd_txn_begin_t begin;
+	timespec_t to = { .tv_sec = 1, .tv_nsec = 0 };
+	uccid_event_t ce;
+	port_event_t pe;
+	int fd, port;
+	uint_t npe;
 
-	if (argc != 2) {
-		errx(EXIT_FAILURE, "missing required ccid path");
-	}
+	fd = open_ccid(argc, argv);
 
-	if ((fd = open(argv[1], O_RDWR)) < 0) {
-		err(EXIT_FAILURE, "failed to open %s", argv[1]);
-	}
+	port = create();
 
-	bzero(&begin, sizeof (begin));
-	begin.uct_version = UCCID_CURRENT_VERSION;
+	setup(fd, &ce);
 
-	if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
-		err(EXIT_FAILURE, "failed to issue begin ioctl");
-	}
+	associate(port, &ce, UCCID_EVENTS_DESIRED);
 
-	write_yk(fd);
+	(void) close(fd);
 
-	read_yk(fd);
+	get_fail(port, &pe, &to);
+
+	getn_fail(port, &pe, 1, &npe, &to);
+
+	dissociate(port, &ce);
 
 	return (0);
 }

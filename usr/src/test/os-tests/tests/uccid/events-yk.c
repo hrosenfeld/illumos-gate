@@ -1,0 +1,98 @@
+/*
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
+ *
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * http://www.illumos.org/license/CDDL.
+ */
+
+/*
+ * Copyright 2019, Joyent, Inc.
+ */
+
+/*
+ * Verify that we can receive expected events from the device when in a
+ * transaction.
+ */
+
+#include <err.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <strings.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/debug.h>
+#include <poll.h>
+#include <port.h>
+
+#include <sys/usb/clients/ccid/uccid.h>
+
+#include "events.h"
+#include "uccid.h"
+#include "yk.h"
+
+int
+main(int argc, char *argv[])
+{
+	int fd, port;
+	uccid_event_t ce;
+	port_event_t pe;
+
+	fd = open_ccid(argc, argv);
+
+	port = create();
+
+	setup(fd, &ce);
+
+	associate(port, &ce, UCCID_EVENTS_DESIRED);
+
+	get(port, &pe, NULL);
+
+	verify(fd, &pe, &ce);
+	check(pe.portev_events, UCCID_EVENT_READY_INSERTED_ON);
+
+	begin_txn(fd);
+
+	get(port, &pe, NULL);
+
+	verify(fd, &pe, &ce);
+	check(pe.portev_events, UCCID_EVENT_COMMAND_SUBMISSION_READY);
+
+	write_yk(fd);
+
+	get(port, &pe, NULL);
+
+	verify(fd, &pe, &ce);
+	check(pe.portev_events, UCCID_EVENT_COMMAND_COMPLETED);
+
+	read_yk(fd);
+
+	get(port, &pe, NULL);
+
+	verify(fd, &pe, &ce);
+	check(pe.portev_events, UCCID_EVENT_COMMAND_SUBMISSION_READY);
+
+	end_txn(fd, UCCID_TXN_END_RESET);
+
+	get(port, &pe, NULL);
+
+	verify(fd, &pe, &ce);
+	check(pe.portev_events, UCCID_EVENT_AFTER_RESET);
+
+	VERIFY3U(ce.ce_icc_insert_gen, >, ce.ce_icc_remove_gen);
+	VERIFY3U(ce.ce_icc_on_gen, >, ce.ce_icc_off_gen);
+
+	get(port, &pe, NULL);
+
+	verify(fd, &pe, &ce);
+	check(pe.portev_events, UCCID_EVENT_TRANSACTION_READY);
+
+	dissociate(port, &ce);
+
+	return (0);
+}

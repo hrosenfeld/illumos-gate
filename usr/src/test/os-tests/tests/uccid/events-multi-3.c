@@ -14,8 +14,8 @@
  */
 
 /*
- * Attempt to open a YubiKey class device and get the basic information applet
- * through an APDU.
+ * Verify that we can associate the same fd twice on the same port using
+ * different objects.
  */
 
 #include <err.h>
@@ -26,35 +26,32 @@
 #include <strings.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/debug.h>
+#include <poll.h>
+#include <port.h>
 
 #include <sys/usb/clients/ccid/uccid.h>
 
-#include "yk.h"
+#include "events.h"
+#include "uccid.h"
 
 int
 main(int argc, char *argv[])
 {
-	int fd;
-	uccid_cmd_txn_begin_t begin;
+	int fd, port;
+	uccid_event_t ce, ce2;
 
-	if (argc != 2) {
-		errx(EXIT_FAILURE, "missing required ccid path");
-	}
+	fd = open_ccid(argc, argv);
 
-	if ((fd = open(argv[1], O_RDWR)) < 0) {
-		err(EXIT_FAILURE, "failed to open %s", argv[1]);
-	}
+	port = create();
 
-	bzero(&begin, sizeof (begin));
-	begin.uct_version = UCCID_CURRENT_VERSION;
+	setup(fd, &ce);
 
-	if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
-		err(EXIT_FAILURE, "failed to issue begin ioctl");
-	}
+	associate(port, &ce, UCCID_EVENTS_DESIRED);
 
-	write_yk(fd);
+	setup(fd, &ce2);
 
-	read_yk(fd);
+	associate(port, &ce2, UCCID_EVENTS_DESIRED);
 
 	return (0);
 }

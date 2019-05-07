@@ -14,8 +14,7 @@
  */
 
 /*
- * Attempt to open a YubiKey class device and get the basic information applet
- * through an APDU.
+ * Verify that we can associate the object in both processes after forking.
  */
 
 #include <err.h>
@@ -26,35 +25,35 @@
 #include <strings.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/debug.h>
+#include <poll.h>
+#include <port.h>
 
 #include <sys/usb/clients/ccid/uccid.h>
 
-#include "yk.h"
+#include "events.h"
+#include "uccid.h"
 
 int
 main(int argc, char *argv[])
 {
-	int fd;
-	uccid_cmd_txn_begin_t begin;
+	pid_t pid;
+	int fd, port;
+	uccid_event_t ce;
 
-	if (argc != 2) {
-		errx(EXIT_FAILURE, "missing required ccid path");
+	fd = open_ccid(argc, argv);
+
+	port = create();
+
+	setup(fd, &ce);
+
+	if (fork() == -1) {
+		err(EXIT_FAILURE, "failed to fork");
 	}
 
-	if ((fd = open(argv[1], O_RDWR)) < 0) {
-		err(EXIT_FAILURE, "failed to open %s", argv[1]);
-	}
+	pid = getpid();
 
-	bzero(&begin, sizeof (begin));
-	begin.uct_version = UCCID_CURRENT_VERSION;
-
-	if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
-		err(EXIT_FAILURE, "failed to issue begin ioctl");
-	}
-
-	write_yk(fd);
-
-	read_yk(fd);
+	associate(port, &ce, UCCID_EVENTS_DESIRED);
 
 	return (0);
 }
