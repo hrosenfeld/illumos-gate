@@ -33,7 +33,7 @@ CPPFLAGS	+= -I$(SRC)/common/ccid
 CERRWARN	+= -_gcc=-Wno-unused-function
 CERRWARN	+= -_gcc=-Wno-unused-variable
 
-LDFLAGS		+= -dy -N misc/usba
+LDFLAGS		+= -dy -N misc/usba -N sys/portfs
 
 .KEEP_STATE:
 

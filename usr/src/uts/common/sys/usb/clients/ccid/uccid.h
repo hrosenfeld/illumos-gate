@@ -21,6 +21,8 @@
  */
 
 #include <sys/types.h>
+#include <sys/ccompile.h>
+#include <sys/port.h>
 #include <sys/usb/clients/ccid/ccid.h>
 
 #ifdef __cplusplus
@@ -109,6 +111,7 @@ typedef struct uccid_cmd_status {
 	ccid_class_descr_t	ucs_class;
 	uccid_prot_t	ucs_prot;
 	ccid_params_t	ucs_params;
+	uint64_t	ucs_gen;
 } __packed uccid_cmd_status_t;
 
 /*
@@ -124,6 +127,44 @@ typedef struct uccid_cmd_icc_modify {
 	uint32_t uci_version;
 	uint32_t uci_action;
 } __packed uccid_cmd_icc_modify_t;
+
+/*
+ * CCID events
+ */
+typedef struct uccid_event {
+	dev_obj_t	ce_dev_obj;
+	uint32_t	ce_version;
+	uint32_t	ce_size;
+	uint64_t	ce_icc_insert_gen;
+	uint64_t	ce_icc_remove_gen;
+	uint64_t	ce_icc_on_gen;
+	uint64_t	ce_icc_off_gen;
+} __packed uccid_event_t;
+
+#define	UCCID_EVENT_ICC_INSERTED		0x001
+#define	UCCID_EVENT_ICC_REMOVED			0x002
+#define	UCCID_EVENT_ICC_POWERED_ON		0x004
+#define	UCCID_EVENT_ICC_POWERED_OFF		0x008
+#define	UCCID_EVENT_TRANSACTION_READY		0x010
+#define	UCCID_EVENT_COMMAND_SUBMISSION_READY	0x020
+#define	UCCID_EVENT_COMMAND_COMPLETED		0x040
+#define	UCCID_EVENT_TRANSACTION_ERROR		0x080
+#define	UCCID_EVENT_READER_GONE			0x100
+
+#define	UCCID_EVENTS_ALL			\
+	(UCCID_EVENT_ICC_INSERTED |		\
+	UCCID_EVENT_ICC_REMOVED |		\
+	UCCID_EVENT_ICC_POWERED_ON |		\
+	UCCID_EVENT_ICC_POWERED_OFF |		\
+	UCCID_EVENT_TRANSACTION_READY |		\
+	UCCID_EVENT_COMMAND_SUBMISSION_READY |	\
+	UCCID_EVENT_COMMAND_COMPLETED |		\
+	UCCID_EVENT_TRANSACTION_ERROR |		\
+	UCCID_EVENT_READER_GONE)
+
+#define	UCCID_EVENTS_ALWAYS_ENABLED	\
+	(UCCID_EVENT_TRANSACTION_ERROR | UCCID_EVENT_READER_GONE)
+
 
 #ifdef __cplusplus
 }

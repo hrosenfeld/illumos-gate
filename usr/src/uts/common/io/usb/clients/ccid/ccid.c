@@ -400,6 +400,7 @@
 #include <sys/strsun.h>
 #include <sys/strsubr.h>
 #include <sys/filio.h>
+#include <sys/port_kernel.h>
 
 #define	USBDRV_MAJOR_VER	2
 #define	USBDRV_MINOR_VER	0
@@ -509,7 +510,15 @@ typedef struct ccid_minor {
 	kcondvar_t		cm_excl_cv;
 	ccid_minor_flags_t	cm_flags;
 	struct pollhead		cm_pollhead;
+	list_t			cm_port_list;
 } ccid_minor_t;
+
+typedef struct ccid_port {
+	list_node_t		cp_list;
+	port_dev_t		*cp_port;
+	uccid_event_t		*cp_uce;
+	ccid_minor_t		*cp_minor;
+} ccid_port_t;
 
 typedef enum ccid_slot_flags {
 	CCID_SLOT_F_CHANGED		= 1 << 0,
@@ -527,6 +536,7 @@ typedef enum ccid_slot_flags {
     CCID_SLOT_F_NEED_TXN_RESET)
 #define	CCID_SLOT_F_NOEXCL_MASK	(CCID_SLOT_F_NEED_TXN_RESET | \
     CCID_SLOT_F_NEED_IO_TEARDOWN)
+#define	CCID_SLOT_F_READY_MASK	(CCID_SLOT_F_PRESENT | CCID_SLOT_F_ACTIVE)
 
 typedef void (*icc_init_func_t)(struct ccid *, struct ccid_slot *);
 typedef int (*icc_transmit_func_t)(struct ccid *, struct ccid_slot *);
@@ -623,6 +633,11 @@ typedef struct ccid_slot {
 	list_t			cs_minors;
 	ccid_icc_t		cs_icc;
 	ccid_io_t		cs_io;
+	uint64_t		cs_gen;
+	uint64_t		cs_icc_insert_gen;
+	uint64_t		cs_icc_remove_gen;
+	uint64_t		cs_icc_on_gen;
+	uint64_t		cs_icc_off_gen;
 } ccid_slot_t;
 
 typedef enum ccid_attach_state {
@@ -635,7 +650,8 @@ typedef enum ccid_attach_state {
 	CCID_ATTACH_SLOTS	= 1 << 6,
 	CCID_ATTACH_HOTPLUG_CB	= 1 << 7,
 	CCID_ATTACH_INTR_ACTIVE	= 1 << 8,
-	CCID_ATTACH_MINORS	= 1 << 9,
+	CCID_ATTACH_PORTFS	= 1 << 9,
+	CCID_ATTACH_MINORS	= 1 << 10
 } ccid_attach_state_t;
 
 typedef enum ccid_flags {
@@ -760,6 +776,24 @@ static void ccid_command_dispatch(ccid_t *);
 static void ccid_command_free(ccid_command_t *);
 static int ccid_bulkin_schedule(ccid_t *);
 static void ccid_command_bcopy(ccid_command_t *, const void *, size_t);
+static void ccid_send_minor_event(ccid_slot_t *, ccid_minor_t *);
+static void ccid_send_event(ccid_slot_t *);
+
+static int ccid_port_dev_fill(port_dev_t *);
+static void ccid_port_dev_free(port_dev_t *);
+static int ccid_port_assoc(port_dev_t *, int, void *);
+static void ccid_port_dissoc(port_dev_t *);
+static int ccid_port_callback(port_dev_t *, int *, pid_t, int, port_kevent_t *);
+
+
+static struct port_dev_ops ccid_pd_ops = {
+	.pd_version = PORT_DEVICE_VERSION_DEFAULT,
+	.pd_port_dev_fill = ccid_port_dev_fill,
+	.pd_port_dev_free = ccid_port_dev_free,
+	.pd_port_associate = ccid_port_assoc,
+	.pd_port_dissociate = ccid_port_dissoc,
+	.pd_port_callback = ccid_port_callback
+};
 
 /*
  * XXX Are these needed?
@@ -904,6 +938,8 @@ ccid_slot_excl_maybe_signal(ccid_slot_t *slot)
 		return;
 	if ((slot->cs_flags & CCID_SLOT_F_NOEXCL_MASK) != 0)
 		return;
+	/* send TRANSACTION READY port event to all listeners */
+	ccid_send_event(slot);
 	cmp = list_head(&slot->cs_excl_waiters);
 	if (cmp == NULL)
 		return;
@@ -1054,6 +1090,8 @@ ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
 	cmp->cm_flags &= ~CCID_MINOR_F_WAITING;
 	cmp->cm_flags |= CCID_MINOR_F_HAS_EXCL;
 	slot->cs_excl_minor = cmp;
+	ccid_send_minor_event(slot, cmp);
+
 	return (0);
 }
 
@@ -2309,6 +2347,15 @@ ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot, boolean_t notify)
 	 * tear down.
 	 */
 	ccid_slot_teardown(ccid, slot, B_TRUE);
+
+	/*
+	 * Update the port event and send it out if requested.
+	 */
+	slot->cs_icc_off_gen = slot->cs_icc_remove_gen =
+	    atomic_inc_64_nv(&slot->cs_gen);
+	if (notify)
+		ccid_send_event(slot);
+
 }
 
 static boolean_t
@@ -2779,7 +2826,7 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 
 
 static void
-ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
+ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot, boolean_t notify)
 {
 	uint_t nvolts = 4;
 	uint_t cvolt = 0;
@@ -2884,6 +2931,14 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 	slot->cs_voltage = volts[cvolt];
 	slot->cs_atr = atr;
 	slot->cs_flags |= CCID_SLOT_F_ACTIVE;
+
+	/*
+	 * Update the port event and send it out if requested.
+	 */
+	slot->cs_icc_insert_gen = slot->cs_icc_on_gen =
+	    atomic_inc_64_nv(&slot->cs_gen);
+	if (notify)
+		ccid_send_event(slot);
 }
 
 static boolean_t
@@ -2932,6 +2987,8 @@ ccid_slot_reset(ccid_t *ccid, ccid_slot_t *slot)
 	}
 
 	slot->cs_flags &= ~CCID_SLOT_F_ACTIVE;
+	slot->cs_icc_off_gen =
+	    atomic_inc_64_nv(&slot->cs_gen);
 
 	ccid_slot_teardown(ccid, slot, B_TRUE);
 
@@ -2940,7 +2997,12 @@ ccid_slot_reset(ccid_t *ccid, ccid_slot_t *slot)
 	 * success or failure, because as far as we care for resetting it, we've
 	 * done our duty once we've powered it off successfully.
 	 */
-	(void) ccid_slot_inserted(ccid, slot);
+	(void) ccid_slot_inserted(ccid, slot, B_FALSE);
+
+	/*
+	 * Send port event about power off and re-insertion.
+	 */
+	ccid_send_event(slot);
 
 	return (B_TRUE);
 }
@@ -2991,7 +3053,7 @@ ccid_worker(void *arg)
 			if (flags & CCID_SLOT_F_INTR_GONE) {
 				ccid_slot_removed(ccid, slot, B_TRUE);
 			} else {
-				ccid_slot_inserted(ccid, slot);
+				ccid_slot_inserted(ccid, slot, B_TRUE);
 				if (slot->cs_flags & CCID_SLOT_F_ACTIVE) {
 					ccid_slot_excl_maybe_signal(slot);
 				}
@@ -3558,6 +3620,12 @@ ccid_disconnect_cb(dev_info_t *dip)
 	ccid->ccid_flags |= CCID_F_DISCONNECTED;
 
 	/*
+	 * Next, send out READER GONE port events on all slots.
+	 */
+	for (i = 0; i < ccid->ccid_nslots; i++)
+		ccid_send_event(&ccid->ccid_slots[i]);
+
+	/*
 	 * Now, go through any threads that are blocked on a minor for exclusive
 	 * access. They should be woken up and they'll fail due to the fact that
 	 * we've set the disconnected flag above.
@@ -3637,6 +3705,11 @@ ccid_cleanup(dev_info_t *dip)
 	if (ccid->ccid_attach & CCID_ATTACH_MINORS) {
 		ccid_minors_fini(ccid);
 		ccid->ccid_attach &= ~CCID_ATTACH_MINORS;
+	}
+
+	if (ccid->ccid_attach & CCID_ATTACH_PORTFS) {
+		portfs_unregister_dev(dip);
+		ccid->ccid_attach &= ~CCID_ATTACH_PORTFS;
 	}
 
 	if (ccid->ccid_attach & CCID_ATTACH_INTR_ACTIVE) {
@@ -3832,6 +3905,16 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	ccid->ccid_attach |= CCID_ATTACH_INTR_ACTIVE;
 
 	/*
+	 * Register portfs operations
+	 */
+	if (portfs_register_dev(dip, &ccid_pd_ops)
+	    != 0) {
+		ccid_error(ccid, "failed to register portfs ops");
+		goto cleanup;
+	}
+	ccid->ccid_attach |= CCID_ATTACH_PORTFS;
+
+	/*
 	 * Create minor nodes for each slot.
 	 */
 	if (!ccid_minors_init(ccid)) {
@@ -3899,6 +3982,15 @@ static void
 ccid_minor_free(ccid_minor_t *cmp)
 {
 	ccid_command_t *cc;
+	ccid_port_t *cp;
+
+	/*
+	 * Clean up any port associations.
+	 */
+	for (cp = list_head(&cmp->cm_port_list);
+	     cp != NULL;
+	     cp = list_head(&cmp->cm_port_list))
+		ccid_port_dev_free(cp->cp_port);
 
 	/*
 	 * Clean up queued commands.
@@ -3908,6 +4000,8 @@ ccid_minor_free(ccid_minor_t *cmp)
 	cv_destroy(&cmp->cm_iowait_cv);
 	cv_destroy(&cmp->cm_read_cv);
 	cv_destroy(&cmp->cm_excl_cv);
+	VERIFY(list_is_empty(&cmp->cm_port_list));
+	list_destroy(&cmp->cm_port_list);
 	kmem_free(cmp, sizeof (ccid_minor_t));
 
 }
@@ -3962,6 +4056,8 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 		kmem_free(cmp, sizeof (ccid_minor_t));
 		return (ENOSPC);
 	}
+	list_create(&cmp->cm_port_list, sizeof (ccid_port_t),
+	    offsetof(ccid_port_t, cp_list));
 	cv_init(&cmp->cm_excl_cv, NULL, CV_DRIVER, NULL);
 	cv_init(&cmp->cm_read_cv, NULL, CV_DRIVER, NULL);
 	cv_init(&cmp->cm_iowait_cv, NULL, CV_DRIVER, NULL);
@@ -4017,6 +4113,8 @@ ccid_user_io_done(ccid_t *ccid, ccid_slot_t *slot)
 	slot->cs_io.ci_flags |= CCID_IO_F_DONE;
 	cmp = slot->cs_excl_minor;
 	if (cmp != NULL) {
+		/* send COMMAND COMPLETED event to this minor */
+		ccid_send_minor_event(slot, cmp);
 		pollwakeup(&cmp->cm_pollhead, POLLIN | POLLRDNORM);
 		cv_signal(&cmp->cm_read_cv);
 	}
@@ -4598,7 +4696,8 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 
 	if (done) {
 		ccid_clear_io(&slot->cs_io);
-		/* XXX Signal next write may be able to happen at this point */
+		/* send COMMAND SUBMISSION READY event to this minor */
+		ccid_send_minor_event(slot, cmp);
 	}
 
 	mutex_exit(&ccid->ccid_mutex);
@@ -4790,6 +4889,8 @@ ccid_ioctl_status(ccid_slot_t *slot, intptr_t arg, int mode)
 		ucs.ucs_prot = slot->cs_icc.icc_cur_protocol;
 		ucs.ucs_params = slot->cs_icc.icc_params;
 	}
+
+	ucs.ucs_gen = slot->cs_gen;
 
 	if (ddi_copyout(&ucs, (void *)arg, sizeof (ucs), mode & FKIOCTL) != 0)
 		return (EFAULT);
@@ -5104,6 +5205,299 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 
 	return (0);
 }
+
+/*
+ * Check whether an event should be sent. Update the generation number if
+ * necessary.
+ */
+static int
+ccid_check_event(int desired, int event, uint64_t *oldgen, uint64_t newgen)
+{
+	if ((desired & event) && (*oldgen < newgen)) {
+		*oldgen = newgen;
+		return (event);
+	}
+
+	return (0);
+}
+
+/*
+ * Check for events to send for on a single minor of a slot, and send events
+ * to all associated ports.
+ */
+static void
+ccid_send_minor_event(ccid_slot_t *slot, ccid_minor_t *cmp)
+{
+	ccid_port_t *cp;
+	port_dev_t *pd;
+	uccid_event_t *uce;
+	int desired, fired;
+
+	VERIFY(MUTEX_HELD(&slot->cs_ccid->ccid_mutex));
+
+	for (cp = list_head(&cmp->cm_port_list);
+	     cp != NULL;
+	     cp = list_next(&cmp->cm_port_list, cp)) {
+		pd = cp->cp_port;
+		uce = cp->cp_uce;
+
+		mutex_enter(&pd->pd_lock);
+		desired = pd->pd_events | UCCID_EVENTS_ALWAYS_ENABLED;
+		fired = 0;
+
+		if (slot->cs_ccid->ccid_flags & CCID_F_DISCONNECTED) {
+			fired |= UCCID_EVENT_READER_GONE;
+
+			if ((cmp->cm_flags & CCID_MINOR_F_HAS_EXCL) &&
+			    (slot->cs_excl_minor == cmp))
+				fired |= UCCID_EVENT_TRANSACTION_ERROR;
+
+			/*
+			 * If the device is disconnected we don't bother with
+			 * any other events.
+			 */
+			goto out;
+		}
+
+		/*
+		 * Check edge-triggered events for insertion/removal and power
+		 * on/off.
+		 */
+		fired |= ccid_check_event(desired, UCCID_EVENT_ICC_INSERTED,
+		    &uce->ce_icc_insert_gen, slot->cs_icc_insert_gen);
+		fired |= ccid_check_event(desired, UCCID_EVENT_ICC_REMOVED,
+		    &uce->ce_icc_remove_gen, slot->cs_icc_remove_gen);
+		fired |= ccid_check_event(desired, UCCID_EVENT_ICC_POWERED_ON,
+		    &uce->ce_icc_on_gen, slot->cs_icc_on_gen);
+		fired |= ccid_check_event(desired, UCCID_EVENT_ICC_POWERED_OFF,
+		    &uce->ce_icc_off_gen, slot->cs_icc_off_gen);
+
+
+		if ((cmp->cm_flags & CCID_MINOR_F_HAS_EXCL) &&
+		    slot->cs_excl_minor == cmp) {
+			/*
+			 * Signal command completion if the IO is done.
+			 */
+			if (slot->cs_io.ci_flags & CCID_IO_F_DONE)
+				fired |= UCCID_EVENT_COMMAND_COMPLETED;
+
+			/*
+			 * Signal command submission ready if the POLLOUT flags
+			 * are all clear and the ICC is present and active.
+			 */
+			if ((slot->cs_flags & CCID_SLOT_F_READY_MASK) &&
+			    (slot->cs_io.ci_flags & CCID_IO_F_POLLOUT_FLAGS)
+			    == 0)
+				fired |= UCCID_EVENT_COMMAND_SUBMISSION_READY;
+		} else {
+			/*
+			 * We're ready for another transaction if this minor
+			 * isn't already waiting to get a transaction, there
+			 * isn't any active transaction at this time, and
+			 * there is no post-transaction work being done.
+			 */
+			if ((cmp->cm_flags & CCID_MINOR_F_WAITING) == 0 &&
+			    slot->cs_excl_minor == NULL &&
+			    (slot->cs_flags & CCID_SLOT_F_NOEXCL_MASK) == 0)
+				fired |= UCCID_EVENT_TRANSACTION_READY;
+		}
+
+#ifdef notyet
+		/*
+		 * XXX: There are more reasons for transaction errors than just
+		 * a disconnected reader. These need to be wired up once proper
+		 * error handling is implemented in the I/O path.
+		 */
+		fired |= UCCID_EVENT_TRANSACTION_ERROR;
+#endif
+
+out:
+		fired &= desired;
+
+		if (fired == 0) {
+			mutex_exit(&pd->pd_lock);
+			continue;
+		}
+
+		port_dev_send_event(pd, fired);
+		mutex_exit(&pd->pd_lock);
+	}
+}
+
+/*
+ * Check and send events on all minors of a slot.
+ */
+static void
+ccid_send_event(ccid_slot_t *slot)
+{
+	int fired = 0;
+	ccid_minor_t *cmp;
+
+	VERIFY(MUTEX_HELD(&slot->cs_ccid->ccid_mutex));
+
+	for (cmp = list_head(&slot->cs_minors);
+	     cmp != NULL;
+	     cmp = list_next(&slot->cs_minors, cmp)) {
+		ccid_send_minor_event(slot, cmp);
+	}
+}
+
+/*
+ * Fill in device specific data for a port associaton. We'll copy in the
+ * uccid_event_t from the user and do a basic sanity check.
+ */
+static int
+ccid_port_dev_fill(port_dev_t *pd)
+{
+	ccid_minor_idx_t *idx;
+	ccid_port_t *cp = pd->pd_data;
+	uccid_event_t *uce;
+
+	idx = ccid_minor_find_user(getminor(pd->pd_vp->v_rdev));
+	if (idx == NULL)
+		return (ENOENT);
+
+	uce = kmem_zalloc(sizeof (uccid_event_t), KM_SLEEP);
+
+	if (ddi_copyin((void *)pd->pd_object, uce, sizeof (uccid_event_t), 0)
+	    != 0) {
+		kmem_free(uce, sizeof (uccid_event_t));
+		return (EFAULT);
+	}
+
+	if (uce->ce_version != UCCID_VERSION_ONE ||
+	    uce->ce_size != sizeof (uccid_event_t)) {
+		kmem_free(uce, sizeof (uccid_event_t));
+		return (EINVAL);
+	}
+
+	if ((pd->pd_events & ~UCCID_EVENTS_ALL) != 0)
+		return (EINVAL);
+
+	if (cp == NULL) {
+		/* new association, set up pd_data */
+		cp = kmem_zalloc(sizeof (ccid_port_t), KM_SLEEP);
+		cp->cp_port = pd;
+		cp->cp_uce = uce;
+		cp->cp_minor = idx->cmi_data.cmi_user;
+		pd->pd_data = cp;
+	} else {
+		/* we're updating an association, hook up new uccid_event_t */
+		kmem_free(cp->cp_uce, sizeof (uccid_event_t));
+		cp->cp_uce = uce;
+	}
+
+	return (0);
+}
+
+/*
+ * Clean up device-specific data of a port association.
+ */
+static void
+ccid_port_dev_free(port_dev_t *pd)
+{
+	ccid_minor_t *cmp;
+	ccid_port_t *cp;
+	ccid_t *ccid;
+
+	cp = pd->pd_data;
+	if (cp == NULL)
+		return;
+
+	cmp = cp->cp_minor;
+	ccid = cmp->cm_slot->cs_ccid;
+
+	mutex_enter(&ccid->ccid_mutex);
+	if (list_link_active(&cp->cp_list))
+		list_remove(&cmp->cm_port_list, cp);
+	mutex_exit(&ccid->ccid_mutex);
+
+	kmem_free(cp->cp_uce, sizeof (uccid_event_t));
+	kmem_free(cp, sizeof (ccid_port_t));
+
+	pd->pd_data = NULL;
+}
+
+/*
+ * Complete the association on a port. This assumes pd_data points to a valid
+ * ccid_port_t, which is then hooked up the minor port list.
+ */
+static int
+ccid_port_assoc(port_dev_t *pd, int events, void *user)
+{
+	ccid_minor_t *cmp;
+	ccid_slot_t *slot;
+	ccid_port_t *cp;
+	ccid_t *ccid;
+
+	cp = pd->pd_data;
+	cmp = cp->cp_minor;
+	slot = cmp->cm_slot;
+	ccid = slot->cs_ccid;
+
+	/* XXX: check events validity */
+
+	mutex_enter(&ccid->ccid_mutex);
+	list_insert_tail(&cmp->cm_port_list, pd->pd_data);
+	ccid_send_minor_event(slot, cmp);
+	mutex_exit(&ccid->ccid_mutex);
+
+	return (0);
+}
+
+/*
+ * Dissociate a port from a minor.
+ */
+static void
+ccid_port_dissoc(port_dev_t *pd)
+{
+	ccid_minor_t *cmp;
+	ccid_slot_t *slot;
+	ccid_port_t *cp;
+	ccid_t *ccid;
+
+	cp = pd->pd_data;
+	if (cp == NULL)
+		return;
+
+	cmp = cp->cp_minor;
+	slot = cmp->cm_slot;
+	ccid = slot->cs_ccid;
+
+	mutex_enter(&ccid->ccid_mutex);
+	if (list_link_active(&cp->cp_list))
+		list_remove(&cmp->cm_port_list, cp);
+	mutex_exit(&ccid->ccid_mutex);
+}
+
+/*
+ * portfs callback
+ *
+ * We only handle the default case where an event is sent out, updating the
+ * user's copy of the uccid_event_t with our current state.
+ */
+static int
+ccid_port_callback(port_dev_t *pd, int *events, pid_t pid, int flag,
+    port_kevent_t *pkevp)
+{
+	ccid_port_t *cp;
+
+	VERIFY(MUTEX_HELD(&pd->pd_lock));
+
+	cp = pd->pd_data;
+
+	if (cp == NULL)
+		return (ENODEV);
+
+	switch (flag) {
+	case PORT_CALLBACK_DEFAULT:
+		return (ddi_copyout((void *)cp->cp_uce, (void *)pd->pd_object,
+		    sizeof (uccid_event_t), 0));
+	}
+
+	return (0);
+}
+
 
 static struct cb_ops ccid_cb_ops = {
 	ccid_open,		/* cb_open */
