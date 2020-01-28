@@ -43,9 +43,17 @@ These different flavors support different communication protocols and
 have different levels of automation for determining the protocol and
 transfers that are required.
 .Pp
-At this time, only the short APDU protocol is supported, which also works with
-readers using the extended APDU protocol.
-TPDU and character level readers are not supported by the driver.
+At this time, the following protcols are supported:
+.Bl -bullet -offset indent
+.It
+short APDU
+.It
+TPDU T=1
+.El
+.Pp
+The short APDU protocol also works with readers using the extended APDU protocol.
+At this time, TPDU T=0 and character level readers are not supported by
+the driver.
 Readers in this category will still attach; however,
 I/O cannot be performed to them.
 .Pp
